@@ -431,11 +431,7 @@ func (fs *FileSystem) Chtimes(p string, ctime, atime, mtime time.Time) error {
 	}
 	var entry *directoryEntry
 	for _, e := range entries {
-		shortName := e.filenameShort
-		if e.fileExtension != "" {
-			shortName += "." + e.fileExtension
-		}
-		if !strings.EqualFold(e.filenameLong, filename) && !strings.EqualFold(shortName, filename) {
+		if !e.nameMatches(filename) {
 			continue
 		}
 		entry = e
@@ -446,6 +442,51 @@ func (fs *FileSystem) Chtimes(p string, ctime, atime, mtime time.Time) error {
 	entry.accessTime = atime
 	entry.modifyTime = mtime
 	entry.createTime = ctime
+	return fs.writeDirectoryEntries(parentDir)
+}
+
+// GetArchiveBit returns the current state of the FAT archive attribute.
+func (fs *FileSystem) GetArchiveBit(p string) (bool, error) {
+	dir := path.Dir(p)
+	filename := path.Base(p)
+	if dir == filename {
+		return false, fmt.Errorf("cannot get archive bit on root directory %s", p)
+	}
+	_, entries, err := fs.readDirWithMkdir(dir, false)
+	if err != nil {
+		return false, fmt.Errorf("could not read directory entries for %s: %w", dir, err)
+	}
+	for _, e := range entries {
+		if !e.nameMatches(filename) {
+			continue
+		}
+		return e.isArchiveDirty, nil
+	}
+	return false, fmt.Errorf("path %s not found", p)
+}
+
+// SetArchiveBit sets or clears the FAT archive attribute on the named file or directory.
+func (fs *FileSystem) SetArchiveBit(p string, set bool) error {
+	dir := path.Dir(p)
+	filename := path.Base(p)
+	if dir == filename {
+		return fmt.Errorf("cannot set archive bit on root directory %s", p)
+	}
+	parentDir, entries, err := fs.readDirWithMkdir(dir, false)
+	if err != nil {
+		return fmt.Errorf("could not read directory entries for %s: %w", dir, err)
+	}
+	var entry *directoryEntry
+	for _, e := range entries {
+		if !e.nameMatches(filename) {
+			continue
+		}
+		entry = e
+	}
+	if entry == nil {
+		return fmt.Errorf("path %s not found", p)
+	}
+	entry.isArchiveDirty = set
 	return fs.writeDirectoryEntries(parentDir)
 }
 
@@ -483,11 +524,7 @@ func (fs *FileSystem) OpenFile(p string, flag int) (filesystem.File, error) {
 		targetEntry = &parentDir.directoryEntry
 	} else {
 		for _, e := range entries {
-			shortName := e.filenameShort
-			if e.fileExtension != "" {
-				shortName += "." + e.fileExtension
-			}
-			if !strings.EqualFold(e.filenameLong, filename) && !strings.EqualFold(shortName, filename) {
+			if !e.nameMatches(filename) {
 				continue
 			}
 			targetEntry = e
@@ -549,11 +586,7 @@ func (fs *FileSystem) Remove(pathname string) error {
 	}
 	var targetEntry *directoryEntry
 	for _, e := range entries {
-		shortName := e.filenameShort
-		if e.fileExtension != "" {
-			shortName += "." + e.fileExtension
-		}
-		if e.filenameLong != filename && shortName != filename {
+		if !e.nameMatches(filename) {
 			continue
 		}
 		if e.isSubdirectory {
@@ -596,11 +629,7 @@ func (fs *FileSystem) Rename(oldpath, newpath string) error {
 	}
 	var targetEntry *directoryEntry
 	for _, e := range entries {
-		shortName := e.filenameShort
-		if e.fileExtension != "" {
-			shortName += "." + e.fileExtension
-		}
-		if e.filenameLong != filename && shortName != filename {
+		if !e.nameMatches(filename) {
 			continue
 		}
 		targetEntry = e
@@ -862,7 +891,7 @@ func (fs *FileSystem) readDirWithMkdir(p string, doMake bool) (*Directory, []*di
 			if e.isVolumeLabel {
 				continue
 			}
-			if !strings.EqualFold(e.filenameLong, subp) && !strings.EqualFold(e.filenameShort, subp) {
+			if !e.nameMatches(subp) {
 				continue
 			}
 			if !e.isSubdirectory {
